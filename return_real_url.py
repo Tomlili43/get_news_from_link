@@ -1,5 +1,4 @@
 # preparation 
-import threading
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import NoSuchElementException
@@ -8,13 +7,15 @@ from newspaper import Article
 import mysql.connector
 import newspaper
 import os
+import MultipleWorker
+import concurrent.futures
 from bs4 import BeautifulSoup
 current_path = os.path.dirname(os.path.realpath(__file__))
 # Replace with your database connection details
 db_config = {
-    "host": "localhost",
-    "user": "root",
-    "password": "root",
+    "host": "192.168.2.108",
+    "user": "finance",
+    "password": "finance",
     "database": "finance_news",
     "auth_plugin":'mysql_native_password',
 }
@@ -38,8 +39,6 @@ class ReturnRealUrl:
     def go_to_yahoo_return_real_url(self):
         time.sleep(1)
         # iterate through all the links
-        # for idx,link in self.links:
-        # for loop
         for idx,link in enumerate(self.links):
             self.driver.get(link)
             time.sleep(1) 
@@ -47,27 +46,11 @@ class ReturnRealUrl:
             soup = BeautifulSoup(page_source, 'html.parser')
             # find continuous button 
             a_tag = soup.find("a", class_="link caas-button")
-
-            # Extract and print the URLs (href attributes) of all <a> tags
             if a_tag:
                 self.links[idx] = a_tag.get("href")
                 print("link from other website")
             else:
                 print(f"Yahoo own link  {link}  Yahoo own news")
-
-            # a_tag_xpath = '//*[@id="caas-art-72627c28-0252-331f-9fb1-d9a2ac885927"]/article/div/div/div/div/div/div[2]/div[4]/div/a'
-            # time.sleep(5)
-            # try:
-            #     if self.driver.find_element_by_xpath(a_tag_xpath):
-            #         a_tag = self.driver.find_element_by_xpath(a_tag_xpath)
-            #         time.sleep(1)
-            #         # get url from a tag
-            #         url = a_tag.get_attribute("href")
-            #         link = url
-            #         # return "url"
-            # except NoSuchElementException:
-            #     print('a_tag_xpath is not found')
-                # return link
 
     def quit(self):
         self.driver.quit()
@@ -138,57 +121,59 @@ def get_symbols():
     cursor.execute(select_query)
     # Fetch all the rows
     symbols = cursor.fetchall()
-
+    # get rid of the tuple
+    symbols = [symbol[0] for symbol in symbols]
     connection.close()
     return symbols
 
-def multiple_thread_scrape(links):
-    for link in links:
-        scraper = ReturnRealUrl(link)
-        scraper.run()
-        print(f"{link} is done")
+def return_url_article(symbol):
+    # for symbol in symbols:
+    print(f"symbol: {symbol}")
+    news_data = get_links_insert_info(symbol)
+    links = []
+    for news in news_data:
+        links.append(news[0])
+    return_real_url = ReturnRealUrl(links)
+    return_real_url.run()
+    real_links = return_real_url.links
 
+    # iterate through news_data and real_links
+    for idx,news in enumerate(news_data):
+        article = newspaper.Article(real_links[idx])
+        # Download and parse the article
+        # if article download fail, skip it
+        try:
+            article.download()
+            article.download()
+            article.parse()
+            # Extract the article content
+            article_text = article.text        
+            news_data[idx] = (real_links[idx],news[1],news[2],article_text)
+            insert_article(news_data[idx])
+        except:
+            print(f"{symbol} article download fail {real_links[idx]}")
+            continue
 
 if __name__ == "__main__":
     # calculate the time for scraping
     start_time = time.time()
     # get symbol from database
     symbols = get_symbols()
-    # iterate through symbols
-    for symbol in symbols:
-        print(f"symbol: {symbol[0]}")
-        news_data = get_links_insert_info(symbol[0])
-        links = []
-        for news in news_data:
-            links.append(news[0])
-        return_real_url = ReturnRealUrl(links)
-        return_real_url.run()
-        real_links = return_real_url.links
 
-        # iterate through news_data and real_links
-        for idx,news in enumerate(news_data):
-            article = newspaper.Article(real_links[idx])
-            # Download and parse the article
-            # if article download fail, skip it
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        # Start the load operations and mark each future with its URL
+        future_to_url = {executor.submit(return_url_article, symbol): symbol for symbol in symbols}
+        for future in concurrent.futures.as_completed(future_to_url):
+            symbol = future_to_url[future]
             try:
-                article.download()
-                article.download()
-                article.parse()
-                # Extract the article content
-                article_text = article.text        
-                news_data[idx] = (real_links[idx],news[1],news[2],article_text)
-                insert_article(news_data[idx])
-            except:
-                continue
+                data = future.result()
+            except Exception as exc:
+                print('%r generated an exception: %s' % (symbol, exc))
+            else:
+                # article is protected by website such as some paid news
+                print('%r error' % (symbol))
+    # worker = MultipleWorker.Multiworker()
+    # worker.multithread_init(return_url_article, df_new=symbols, nprocess=24)
+   
     print(f"--- {time.time() - start_time} seconds ---")
     
-   
-    # multiple threads == multiple scrapers == multiple chrome 
-    
-    # threads = []
-    # for scraper in scrapers:
-    #     thread = threading.Thread(target=multiple_thread_scrape,args=(scraper,queries))
-    #     threads.append(thread)
-    #     thread.start()
-    # for thread in threads:
-    #     thread.join()
